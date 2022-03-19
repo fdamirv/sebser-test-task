@@ -1,20 +1,13 @@
 (ns sebser-test-task.core
   (:require [reitit.ring :as ring]
             [instaparse.core :as insta]
+            [instaparse.transform :as intra]
             [ring.adapter.jetty9 :refer [run-jetty]]
             [reitit.ring.middleware.parameters :as parameters]))
 
 (def ariphm-expr
   (insta/parser
-    "S = <#'\\s*'> expr <#'\\s*'>
-     expr =  operand ( <#'\\s*'> operator <#'\\s*'> operand )*
-     operator = '+'|'-'|'*'|'/'
-     operand = #'(-?(([1-9][0-9]*[.][0-9]*)|(0?[.][0-9]*)|([1-9][0-9]*[.]?)))' | <'('> <#'\\s*'> expr <#'\\s*'> <')'>
-     "))
-
-(def ariphm-expr2
-  (insta/parser
-    "S = <#'\\s*'> expr2 <#'\\s*'>
+    "<S> = <#'\\s*'> expr2 <#'\\s*'>
      expr1 =  operand ( <#'\\s*'> operator1 <#'\\s*'> operand )*
      expr2 =  operand ( <#'\\s*'> operator2 <#'\\s*'> operand )*
      operator1 = '*'|'/'
@@ -22,39 +15,57 @@
      operand = expr1 | #'(-?(([1-9][0-9]*[.][0-9]*)|(0?[.][0-9]*)|([1-9][0-9]*[.]?)))' | <'('> <#'\\s*'> expr2 <#'\\s*'> <')'>
      "))
 
+(declare interpret)
+
+(defn operand-interpreter
+  [operand]
+  (cond
+    (string? operand) (Double/parseDouble operand)
+    (vector? operand) (interpret operand)
+    :else operand))
+
+(defn operator-interpreter
+  [operator]
+  (let [operator (case operator
+                   "*" *
+                   "/" /
+                   "+" +
+                   "-" -)]
+    operator))
+
+(defn expr-interpreter
+  [& tokens]
+  (->> tokens
+      (cons +)
+      (partition 2)
+      (reduce
+        (fn [acc [operator-fn operand-value]]
+          (operator-fn acc operand-value))
+        0)))
+
 (defn interpret
   [parsed-expr]
-  (->> parsed-expr
-       rest
-       (cons [:operator "+"])
-       (partition 2)
-       (reduce
-         (fn [acc [[_ operator] [_ operand]]]
-           (let [operator-fn   (case operator
-                                 "+" +
-                                 "-" -
-                                 "*" *
-                                 "/" /)
-                 operand-value (if (string? operand)
-                                 (Double/parseDouble operand)
-                                 (interpret operand))]
-             (operator-fn acc operand-value)))
-         0)))
+  (intra/transform
+    {:operand   operand-interpreter
+     :operator1 operator-interpreter
+     :operator2 operator-interpreter
+     :expr1     expr-interpreter
+     :expr2     expr-interpreter}
+    parsed-expr))
 
 (comment
 
-  (interpret (second (ariphm-expr2 "1 + 2 * ( 3 + 4 )")))
-  (interpret (second (ariphm-expr "1+2*(3+4)")))
-  (interpret (second (ariphm-expr2 "1+2*(3+4)")))
-  (interpret (second (ariphm-expr2 "1")))
+  (interpret (first (ariphm-expr "1 + 2 * ( 3 + 4 )")))
+  (interpret (first (ariphm-expr "1+2*(3+4)")))
+  (interpret (first (ariphm-expr "1")))
 
   )
 
 (defn calc-handler
   [req]
   (if-let [expr (some-> req :query-params (get "expr") not-empty)]
-    (let [parsed-expr (ariphm-expr2 expr)
-          res (interpret (second parsed-expr))]
+    (let [parsed-expr (ariphm-expr expr)
+          res (interpret (first parsed-expr))]
       {:status  200
        :headers {"content-type" "text/plain"}
        :body    (str "Input: " expr "\n"
@@ -80,9 +91,10 @@
   (let [port (or (some-> port not-empty Integer/parseInt) 7000)]
     (start-sebser-service port)))
 
-(def srv nil)
+
 
 (comment
+  (def srv nil)
 
   (do
     (when (some? srv)
